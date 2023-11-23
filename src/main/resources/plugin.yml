@@ -3,4 +3,8 @@ version: '${version}'
 main: com.taspia.taspiamines.TaspiaMines
 api-version: '1.20'
 load: STARTUP
-depend: [WorldGuard]
+depend: [WorldGuard, WorldEdit]
+commands:
+  taspiamines:
+    description: Reloads the TaspiaMines configuration
+    usage: /<command> reload
