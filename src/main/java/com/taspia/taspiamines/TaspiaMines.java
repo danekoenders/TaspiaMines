@@ -3,6 +3,7 @@ package com.taspia.taspiamines;
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
 import com.sk89q.worldguard.WorldGuard;
 import com.sk89q.worldguard.protection.regions.RegionContainer;
+import org.bukkit.block.data.Ageable;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -160,27 +161,38 @@ public final class TaspiaMines extends JavaPlugin {
                 if (world != null) {
                     getLogger().info("World found for farm: " + farmKey);
                     if (isPlayerInWorld(world)) {
+                        getLogger().info("Player is in world: " + world);
                         ProtectedRegion region = getRegion(world, farmKey);
                         if (region != null) {
                             String schematicName = farmsConfig.getString("farms." + farmKey + ".schematic");
                             String cropType = farmsConfig.getString("farms." + farmKey + ".cropType");
                             Clipboard clipboard = loadSchematic(schematicName);
+                            getLogger().info("cropType: " + cropType.toLowerCase());
+                            getLogger().info("schematicName: " + schematicName);
 
                             if (clipboard != null) {
                                 BlockVector3 min = clipboard.getRegion().getMinimumPoint();
                                 BlockVector3 max = clipboard.getRegion().getMaximumPoint();
+                                getLogger().info("Schematic boundaries min" + min);
+                                getLogger().info("Schematic boundaries " + max);
+
 
                                 for (int x = min.getX(); x <= max.getX(); x++) {
                                     for (int y = min.getY(); y <= max.getY(); y++) {
                                         for (int z = min.getZ(); z <= max.getZ(); z++) {
                                             BlockVector3 pos = BlockVector3.at(x, y, z);
                                             BlockType blockType = clipboard.getBlock(pos).getBlockType();
+                                            getLogger().info("Block coordinates: " + x + ", " + y + "," + z);
+                                            getLogger().info("Blocktype ID: " + blockType.getId());
 
-                                            if (blockType.getId().equals(cropType)) {
+                                            if (blockType.getId().equals("minecraft:" + cropType.toLowerCase())) {
                                                 Block block = world.getBlockAt(x, y, z);
-                                                if (block.getType() == Material.FARMLAND && block.getRelative(BlockFace.UP).getType() == Material.AIR) {
-                                                    block.getRelative(BlockFace.UP).setType(Material.valueOf(cropType.toUpperCase())); // Replace with the actual crop type
-                                                    getLogger().info("Replanted crop at " + block.getLocation().toString());
+                                                block.setType(Material.getMaterial(cropType.toUpperCase()));
+                                                if (block.getBlockData() instanceof Ageable) {
+                                                    Ageable age = (Ageable) block.getBlockData();
+                                                    age.setAge(age.getMaximumAge());
+                                                    block.setBlockData(age);
+                                                    getLogger().info("Replanting block: " + block);
                                                 }
                                             }
                                         }
