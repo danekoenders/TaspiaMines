@@ -1,7 +1,13 @@
 farms:
   wheat_mine_1:
-    name: "Example Farm"
-    cooldown: 10
+    name: "Wheat Farm"
+    cooldown: 60
+    currentCooldown: 60
     cropType: "WHEAT"
     world: "world"
     schematic: "wheat_mine_1"
+    regenPercentage: 80  # Add this line for each farm
+    drops:
+      - "WHEAT 1 1"
+      - "SWEET_BERRIES 1 0.01 special"
+    exp: 2
