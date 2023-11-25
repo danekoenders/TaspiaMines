@@ -7,9 +7,11 @@ import org.bukkit.block.Block;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Arrays;
 import java.util.List;
@@ -67,6 +69,7 @@ public class FarmBlockBreakListener implements Listener {
             double chance = Double.parseDouble(parts[2]);
             boolean isFortuneApplicable = Arrays.asList(parts).contains("fortune");
             boolean isSpecialDrop = Arrays.asList(parts).contains("special");
+            Block block = event.getBlock();
 
             if (material != null && Math.random() < chance) {
                 if (isFortuneApplicable && fortuneLevel > 0) {
@@ -79,7 +82,12 @@ public class FarmBlockBreakListener implements Listener {
                     sendSpecialDropActionBar(player);
                 }
 
-                event.getBlock().setType(Material.AIR);
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        block.setType(Material.AIR);
+                    }
+                }.runTaskLater(plugin, 1L); // Delay of 1 tick
             }
         }
     }
