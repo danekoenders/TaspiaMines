@@ -4,13 +4,11 @@ import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
 import com.sk89q.worldguard.WorldGuard;
 import com.sk89q.worldguard.protection.regions.RegionContainer;
 import org.bukkit.Bukkit;
-import org.bukkit.block.data.Ageable;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.entity.Player;
 import org.bukkit.block.Block;
 import com.sk89q.worldguard.bukkit.WorldGuardPlugin;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
@@ -27,6 +25,7 @@ import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.List;
 import java.util.Set;
 import org.bukkit.configuration.file.YamlConfiguration;
 
@@ -82,11 +81,10 @@ public final class TaspiaMines extends JavaPlugin {
         for (String farm : farms) {
             String name = farmsConfig.getString("farms." + farm + ".name");
             int cooldown = farmsConfig.getInt("farms." + farm + ".cooldown");
+            List<String> blocks = farmsConfig.getStringList("farms." + farm + ".blocks");
 
-            String cropType = farmsConfig.getString("farms." + farm + ".cropType");
-            String blockType = farmsConfig.getString("farms." + farm + ".blockType");
-            getLogger().info("Initializing farm: " + name + " with cooldown: " + cooldown + ", cropType: " + cropType);
-            // Initialize each farm with its configuration
+            getLogger().info("Initializing farm: " + name + " with cooldown: " + cooldown);
+            getLogger().info("Blocks for this farm: " + String.join(", ", blocks));
         }
     }
 
@@ -160,74 +158,85 @@ public final class TaspiaMines extends JavaPlugin {
             int cooldown = farmsConfig.getInt("farms." + farmKey + ".cooldown");
             int currentCooldown = farmsConfig.getInt("farms." + farmKey + ".currentCooldown");
             double regenPercentage = farmsConfig.getDouble("farms." + farmKey + ".regenPercentage");
-            String cropType = farmsConfig.getString("farms." + farmKey + ".cropType");
 
             World world = getServer().getWorld(farmsConfig.getString("farms." + farmKey + ".world"));
             if (world != null) {
                 Clipboard clipboard = loadSchematic(farmsConfig.getString("farms." + farmKey + ".schematic"));
                 if (clipboard != null) {
-                    double harvestedPercentage = calculateHarvestedPercentage(world, clipboard, farmsConfig.getString("farms." + farmKey + ".cropType").toLowerCase());
+                    double totalHarvestedPercentage = 0;
+                    List<String> blocks = farmsConfig.getStringList("farms." + farmKey + ".blocks");
+                    for (String blockType : blocks) {
+                        totalHarvestedPercentage += calculateHarvestedPercentage(world, clipboard, blockType.toLowerCase());
+                    }
+                    double averageHarvestedPercentage = totalHarvestedPercentage / blocks.size();
 
-                    if (harvestedPercentage >= regenPercentage) {
-                        if (currentCooldown > 0) {
+                    if (averageHarvestedPercentage >= regenPercentage) {
+                        if (currentCooldown <= 0) {
+                            if (!world.getPlayers().isEmpty()) {
+                                for (String blockType : blocks) {
+                                    replantBlockType(world, clipboard, blockType);
+                                }
+                                farmsConfig.set("farms." + farmKey + ".currentCooldown", cooldown); // Reset cooldown
+                            }
+                        } else {
                             currentCooldown -= 10; // Decrease cooldown
                             farmsConfig.set("farms." + farmKey + ".currentCooldown", currentCooldown);
-                        } else if (!world.getPlayers().isEmpty()){
-                            BlockVector3 min = clipboard.getRegion().getMinimumPoint();
-                            BlockVector3 max = clipboard.getRegion().getMaximumPoint();
-
-                            for (int x = min.getX(); x <= max.getX(); x++) {
-                                for (int y = min.getY(); y <= max.getY(); y++) {
-                                    for (int z = min.getZ(); z <= max.getZ(); z++) {
-                                        BlockVector3 pos = BlockVector3.at(x, y, z);
-                                        BlockType blockType = clipboard.getBlock(pos).getBlockType();
-
-                                        if (blockType.getId().equals("minecraft:" + cropType.toLowerCase())) {
-                                            Block block = world.getBlockAt(x, y, z);
-                                            block.setType(Material.getMaterial(cropType.toUpperCase()));
-                                            if (block.getBlockData() instanceof Ageable) {
-                                                Ageable age = (Ageable) block.getBlockData();
-                                                age.setAge(age.getMaximumAge());
-                                                block.setBlockData(age);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            farmsConfig.set("farms." + farmKey + ".currentCooldown", cooldown); // Reset cooldown
                         }
                     }
                 } else {
                     getLogger().warning("Clipboard is null for farm: " + farmKey);
                 }
+            } else {
+                getLogger().warning("World is null for farm: " + farmKey);
             }
         }
     }
 
-    private double calculateHarvestedPercentage(World world, Clipboard clipboard, String cropType) {
-        int totalCrops = 0;
-        int harvestedCrops = 0;
+
+    private void replantBlockType(World world, Clipboard clipboard, String blockType) {
         BlockVector3 min = clipboard.getRegion().getMinimumPoint();
         BlockVector3 max = clipboard.getRegion().getMaximumPoint();
 
-        for (int x = min.getX(); x <= max.getX(); x++) {
-            for (int y = min.getY(); y <= max.getY(); y++) {
-                for (int z = min.getZ(); z <= max.getZ(); z++) {
+        for (int x = min.x(); x <= max.x(); x++) {
+            for (int y = min.y(); y <= max.y(); y++) {
+                for (int z = min.z(); z <= max.z(); z++) {
                     BlockVector3 pos = BlockVector3.at(x, y, z);
-                    BlockType blockType = clipboard.getBlock(pos).getBlockType();
+                    com.sk89q.worldedit.world.block.BlockState clipboardState = clipboard.getBlock(pos);
 
-                    if (blockType.getId().equals("minecraft:" + cropType.toLowerCase())) {
-                        totalCrops++;
+                    if (clipboardState.getBlockType().id().equals("minecraft:" + blockType.toLowerCase())) {
+                        Block block = world.getBlockAt(x, y, z);
+                        org.bukkit.block.data.BlockData bukkitData = BukkitAdapter.adapt(clipboardState);
+
+                        block.setBlockData(bukkitData, false);
+                    }
+                }
+            }
+        }
+    }
+
+    private double calculateHarvestedPercentage(World world, Clipboard clipboard, String blockType) {
+        int totalBlocks = 0;
+        int harvestedBlocks = 0;
+        BlockVector3 min = clipboard.getRegion().getMinimumPoint();
+        BlockVector3 max = clipboard.getRegion().getMaximumPoint();
+
+        for (int x = min.x(); x <= max.x(); x++) {
+            for (int y = min.y(); y <= max.y(); y++) {
+                for (int z = min.z(); z <= max.z(); z++) {
+                    BlockVector3 pos = BlockVector3.at(x, y, z);
+                    BlockType type = clipboard.getBlock(pos).getBlockType();
+
+                    if (type.id().equals("minecraft:" + blockType.toLowerCase())) {
+                        totalBlocks++;
                         Block block = world.getBlockAt(x, y, z);
                         if (block.getType() == Material.AIR) {
-                            harvestedCrops++;
+                            harvestedBlocks++;
                         }
                     }
                 }
             }
         }
-
-        return totalCrops == 0 ? 0 : (double) harvestedCrops / totalCrops * 100;
+        return totalBlocks == 0 ? 0 : (double) harvestedBlocks / totalBlocks * 100;
     }
 
 
@@ -247,15 +256,6 @@ public final class TaspiaMines extends JavaPlugin {
             getLogger().warning("WorldGuard plugin not found!");
         }
         return wgPlugin;
-    }
-
-    private boolean isPlayerInWorld(World world) {
-        for (Player player : world.getPlayers()) {
-            if (player != null && player.isOnline()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     public ProtectedRegion getRegion(World world, String regionName) {

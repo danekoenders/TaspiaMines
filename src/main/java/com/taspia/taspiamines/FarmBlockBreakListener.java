@@ -35,61 +35,63 @@ public class FarmBlockBreakListener implements Listener {
         for (String farmKey : plugin.getFarmsConfig().getConfigurationSection("farms").getKeys(false)) {
             ProtectedRegion region = plugin.getRegion(world, farmKey);
             if (region != null && region.contains(block.getX(), block.getY(), block.getZ())) {
-                String cropType = plugin.getFarmsConfig().getString("farms." + farmKey + ".cropType");
-                if (cropType != null && !block.getType().toString().equalsIgnoreCase(cropType)) {
-                    // If the block broken is not the crop type, cancel the event
+                List<String> blocks = plugin.getFarmsConfig().getStringList("farms." + farmKey + ".blocks");
+
+                if (!blocks.contains(block.getType().toString())) {
+                    // If the block broken is not in the blocks list, cancel the event
                     event.setCancelled(true);
                     return;
                 }
 
-                // If the block is the crop type, handle the farm block break (existing logic)
+                // If the block is in the blocks list, handle the farm block break
                 handleFarmBlockBreak(event, farmKey);
                 return;
             }
         }
     }
 
-
     private void handleFarmBlockBreak(BlockBreakEvent event, String farmKey) {
         List<String> dropsConfig = plugin.getFarmsConfig().getStringList("farms." + farmKey + ".drops");
         int xp = plugin.getFarmsConfig().getInt("farms." + farmKey + ".xp");
         Player player = event.getPlayer();
         ItemStack tool = player.getInventory().getItemInMainHand();
-        int fortuneLevel = tool.getEnchantmentLevel(Enchantment.LOOT_BONUS_BLOCKS);
+        int fortuneLevel = tool.getEnchantmentLevel(Enchantment.FORTUNE);
+        Block block = event.getBlock();
 
         event.setDropItems(false);
         event.setExpToDrop(xp);
 
-        for (String dropEntry : dropsConfig) {
-            String[] parts = dropEntry.split(" ");
-            if (parts.length < 3) continue;
+        if (!dropsConfig.isEmpty()) {
+            for (String dropEntry : dropsConfig) {
+                String[] parts = dropEntry.split(" ");
+                if (parts.length < 3) continue;
 
-            Material material = Material.getMaterial(parts[0]);
-            int amount = Integer.parseInt(parts[1]);
-            double chance = Double.parseDouble(parts[2]);
-            boolean isFortuneApplicable = Arrays.asList(parts).contains("fortune");
-            boolean isSpecialDrop = Arrays.asList(parts).contains("special");
-            Block block = event.getBlock();
+                Material material = Material.getMaterial(parts[0]);
+                int amount = Integer.parseInt(parts[1]);
+                double chance = Double.parseDouble(parts[2]);
+                boolean isFortuneApplicable = Arrays.asList(parts).contains("fortune");
+                boolean isSpecialDrop = Arrays.asList(parts).contains("special");
 
-            if (material != null && Math.random() < chance) {
-                if (isFortuneApplicable && fortuneLevel > 0) {
-                    amount = calculateFortuneDropAmount(amount, fortuneLevel);
-                }
-                ItemStack drop = new ItemStack(material, amount);
-                event.getBlock().getWorld().dropItemNaturally(event.getBlock().getLocation(), drop);
-
-                if (isSpecialDrop) {
-                    sendSpecialDropActionBar(player);
-                }
-
-                new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        block.setType(Material.AIR);
+                if (material != null && Math.random() < chance) {
+                    if (isFortuneApplicable && fortuneLevel > 0) {
+                        amount = calculateFortuneDropAmount(amount, fortuneLevel);
                     }
-                }.runTaskLater(plugin, 1L); // Delay of 1 tick
+                    ItemStack drop = new ItemStack(material, amount);
+                    block.getWorld().dropItemNaturally(block.getLocation(), drop);
+
+                    if (isSpecialDrop) {
+                        sendSpecialDropActionBar(player);
+                    }
+                }
             }
         }
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                block.setType(Material.AIR);
+            }
+        }.runTaskLater(plugin, 1L); // Delay of 1 tick
     }
 
     private int calculateFortuneDropAmount(int baseAmount, int fortuneLevel) {
