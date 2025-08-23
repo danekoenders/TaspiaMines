@@ -63,6 +63,13 @@ public final class TaspiaMines extends JavaPlugin {
             new TaspiaMinesExpansion(this).register();
         }
 
+        // Check for TaspiaDrops API availability
+        if(Bukkit.getPluginManager().getPlugin("TaspiaDrops") != null){
+            getLogger().info("TaspiaDrops found! Special item drops are enabled.");
+        } else {
+            getLogger().info("TaspiaDrops not found. Only regular drops will be available.");
+        }
+
         loadFarmsConfig();
         worldGuard = getWorldGuard();
         initFarms();

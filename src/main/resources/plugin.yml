@@ -4,6 +4,7 @@ main: com.taspia.taspiamines.TaspiaMines
 api-version: '1.20'
 load: STARTUP
 depend: [WorldGuard, WorldEdit, PlaceholderAPI]
+soft-depend: [TaspiaDrops]
 commands:
   taspiamines:
     description: Reloads the TaspiaMines configuration

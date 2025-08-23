@@ -11,4 +11,10 @@ farms:
     drops:
       - "WHEAT 1 1"
       - "SWEET_BERRIES 1 0.01 special"
+    # TaspiaDrops special items (requires TaspiaDrops plugin)
+    # Format: "taspiadrops:<item_id> <amount> <chance> [fortune] [special]"
+    taspiadrops:
+      - "rare_gem 1 0.05 special"           # 5% chance for rare gem (shows special message)
+      - "legendary_sword 1 0.001 special"   # 0.1% chance for legendary sword
+      - "gold_coin 5 0.1 fortune"           # 10% chance for 5 gold coins (affected by fortune)
     exp: 2
