@@ -45,6 +45,9 @@ public class FarmBlockBreakListener implements Listener {
 
                 // If the block is in the blocks list, handle the farm block break
                 handleFarmBlockBreak(event, farmKey);
+                
+                // Invalidate harvest percentage cache for this farm to ensure accurate readings
+                plugin.invalidateHarvestCache(farmKey);
                 return;
             }
         }
@@ -91,7 +94,7 @@ public class FarmBlockBreakListener implements Listener {
             public void run() {
                 block.setType(Material.AIR);
             }
-        }.runTaskLater(plugin, 1L); // Delay of 1 tick
+        }.runTaskLater(plugin, 1L); // Delay of 1 tick for proper drop handling
     }
 
     private int calculateFortuneDropAmount(int baseAmount, int fortuneLevel) {

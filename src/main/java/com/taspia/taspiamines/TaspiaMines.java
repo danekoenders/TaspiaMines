@@ -25,15 +25,34 @@ import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 public final class TaspiaMines extends JavaPlugin {
 
+    // Constants
+    private static final long REPLANT_TASK_INTERVAL = 200L; // 10 seconds in ticks
+    private static final int COOLDOWN_DECREMENT = 10; // seconds
+    private static final long TASK_DELAY = 1L; // 1 tick delay for block breaking
+    
+    // Core components
     private WorldGuardPlugin worldGuard;
     private File farmsConfigFile;
     private FileConfiguration farmsConfig;
+    
+    // Schematic caching system
+    private final Map<String, Clipboard> schematicCache = new ConcurrentHashMap<>();
+    private final Set<String> failedSchematics = ConcurrentHashMap.newKeySet();
+    
+    // Performance optimization: cache last harvest percentages
+    private final Map<String, Double> lastHarvestPercentage = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastPercentageCheck = new ConcurrentHashMap<>();
+    private static final long PERCENTAGE_CACHE_TIME = 30000; // 30 seconds cache
+    
+    // Smart cache invalidation: only invalidate once per farm per time window
+    private final Map<String, Long> lastCacheInvalidation = new ConcurrentHashMap<>();
+    private static final long CACHE_INVALIDATION_COOLDOWN = 5000; // 5 seconds between invalidations
 
     @Override
     public void onEnable() {
@@ -46,8 +65,9 @@ public final class TaspiaMines extends JavaPlugin {
 
         loadFarmsConfig();
         worldGuard = getWorldGuard();
-        startReplantingTask();
         initFarms();
+        preloadSchematics();
+        startReplantingTask();
     }
 
     @Override
@@ -87,6 +107,32 @@ public final class TaspiaMines extends JavaPlugin {
             getLogger().info("Blocks for this farm: " + String.join(", ", blocks));
         }
     }
+    
+    /**
+     * Preloads all schematics into cache during startup for better performance
+     */
+    private void preloadSchematics() {
+        if (farmsConfig.getConfigurationSection("farms") == null) {
+            getLogger().warning("No farms section found in configuration!");
+            return;
+        }
+        
+        Set<String> farms = farmsConfig.getConfigurationSection("farms").getKeys(false);
+        getLogger().info("Preloading schematics for " + farms.size() + " farms...");
+        
+        int successCount = 0;
+        for (String farm : farms) {
+            String schematicName = farmsConfig.getString("farms." + farm + ".schematic");
+            if (schematicName != null && !schematicName.trim().isEmpty()) {
+                Clipboard clipboard = loadSchematic(schematicName);
+                if (clipboard != null) {
+                    successCount++;
+                }
+            }
+        }
+        
+        getLogger().info("Successfully preloaded " + successCount + "/" + farms.size() + " schematics");
+    }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -101,12 +147,66 @@ public final class TaspiaMines extends JavaPlugin {
     }
 
     private void reloadPluginConfig() {
+        clearSchematicCache();
         loadFarmsConfig();
         initFarms();
+        preloadSchematics();
         getLogger().info("Configuration reloaded.");
     }
+    
+    /**
+     * Clears the schematic cache and failed schematics set
+     */
+    private void clearSchematicCache() {
+        int cachedCount = schematicCache.size();
+        schematicCache.clear();
+        failedSchematics.clear();
+        loggedRegionWarnings.clear(); // Clear warning cache on reload
+        lastHarvestPercentage.clear(); // Clear percentage cache on reload
+        lastPercentageCheck.clear();
+        lastCacheInvalidation.clear(); // Clear invalidation tracking on reload
+        getLogger().info("Cleared " + cachedCount + " cached schematics, percentage cache, and warning cache");
+    }
 
+    /**
+     * Loads a schematic from cache or disk. Uses caching for performance.
+     * @param schematicName The name of the schematic file (without extension)
+     * @return The loaded clipboard or null if failed
+     */
     private Clipboard loadSchematic(String schematicName) {
+        if (schematicName == null || schematicName.trim().isEmpty()) {
+            return null;
+        }
+        
+        // Check if we already failed to load this schematic
+        if (failedSchematics.contains(schematicName)) {
+            return null;
+        }
+        
+        // Check cache first
+        Clipboard cached = schematicCache.get(schematicName);
+        if (cached != null) {
+            return cached;
+        }
+        
+        // Load from disk
+        Clipboard clipboard = loadSchematicFromDisk(schematicName);
+        if (clipboard != null) {
+            schematicCache.put(schematicName, clipboard);
+            getLogger().info("Cached schematic: " + schematicName);
+        } else {
+            failedSchematics.add(schematicName);
+        }
+        
+        return clipboard;
+    }
+    
+    /**
+     * Loads a schematic directly from disk without caching
+     * @param schematicName The name of the schematic file
+     * @return The loaded clipboard or null if failed
+     */
+    private Clipboard loadSchematicFromDisk(String schematicName) {
         // Create or get the schematics directory
         File schematicsDir = new File(getDataFolder(), "schematics");
         if (!schematicsDir.exists()) {
@@ -136,7 +236,7 @@ public final class TaspiaMines extends JavaPlugin {
                 clipboard = reader.read();
             }
         } catch (Exception e) {
-            getLogger().severe("Error loading schematic: " + e.getMessage());
+            getLogger().severe("Error loading schematic '" + schematicName + "': " + e.getMessage());
             e.printStackTrace();
             return null;
         }
@@ -150,46 +250,131 @@ public final class TaspiaMines extends JavaPlugin {
             public void run() {
                 replantFarms();
             }
-        }.runTaskTimer(this, 200L, 200L); // Run every second (20 ticks)
+        }.runTaskTimer(this, REPLANT_TASK_INTERVAL, REPLANT_TASK_INTERVAL);
     }
 
     private void replantFarms() {
+        if (farmsConfig.getConfigurationSection("farms") == null) {
+            return;
+        }
+        
         for (String farmKey : farmsConfig.getConfigurationSection("farms").getKeys(false)) {
-            int cooldown = farmsConfig.getInt("farms." + farmKey + ".cooldown");
-            int currentCooldown = farmsConfig.getInt("farms." + farmKey + ".currentCooldown");
-            double regenPercentage = farmsConfig.getDouble("farms." + farmKey + ".regenPercentage");
-
-            World world = getServer().getWorld(farmsConfig.getString("farms." + farmKey + ".world"));
-            if (world != null) {
-                Clipboard clipboard = loadSchematic(farmsConfig.getString("farms." + farmKey + ".schematic"));
-                if (clipboard != null) {
-                    double totalHarvestedPercentage = 0;
-                    List<String> blocks = farmsConfig.getStringList("farms." + farmKey + ".blocks");
-                    for (String blockType : blocks) {
-                        totalHarvestedPercentage += calculateHarvestedPercentage(world, clipboard, blockType.toLowerCase());
-                    }
-                    double averageHarvestedPercentage = totalHarvestedPercentage / blocks.size();
-
-                    if (averageHarvestedPercentage >= regenPercentage) {
-                        if (currentCooldown <= 0) {
-                            if (!world.getPlayers().isEmpty()) {
-                                for (String blockType : blocks) {
-                                    replantBlockType(world, clipboard, blockType);
-                                }
-                                farmsConfig.set("farms." + farmKey + ".currentCooldown", cooldown); // Reset cooldown
-                            }
-                        } else {
-                            currentCooldown -= 10; // Decrease cooldown
-                            farmsConfig.set("farms." + farmKey + ".currentCooldown", currentCooldown);
-                        }
-                    }
-                } else {
-                    getLogger().warning("Clipboard is null for farm: " + farmKey);
-                }
-            } else {
-                getLogger().warning("World is null for farm: " + farmKey);
+            try {
+                processFarm(farmKey);
+            } catch (Exception e) {
+                getLogger().severe("Error processing farm '" + farmKey + "': " + e.getMessage());
+                e.printStackTrace();
             }
         }
+    }
+    
+    /**
+     * Processes a single farm for regeneration
+     * @param farmKey The farm configuration key
+     */
+    private void processFarm(String farmKey) {
+        int cooldown = farmsConfig.getInt("farms." + farmKey + ".cooldown");
+        int currentCooldown = farmsConfig.getInt("farms." + farmKey + ".currentCooldown");
+        double regenPercentage = farmsConfig.getDouble("farms." + farmKey + ".regenPercentage");
+        String worldName = farmsConfig.getString("farms." + farmKey + ".world");
+        String schematicName = farmsConfig.getString("farms." + farmKey + ".schematic");
+
+        // Validate configuration
+        if (worldName == null || schematicName == null) {
+            return;
+        }
+
+        World world = getServer().getWorld(worldName);
+        if (world == null) {
+            return;
+        }
+
+        // Get or calculate current harvest percentage efficiently
+        double averageHarvestedPercentage = getCachedHarvestPercentage(farmKey, world, schematicName, regenPercentage);
+        
+        // Only process cooldown and regeneration if harvest threshold is met
+        if (averageHarvestedPercentage >= regenPercentage) {
+            if (currentCooldown <= 0) {
+                // Only regenerate if there are players online
+                if (!getServer().getOnlinePlayers().isEmpty()) {
+                    // Load schematic for regeneration
+                    Clipboard clipboard = loadSchematic(schematicName);
+                    if (clipboard != null) {
+                        List<String> blocks = farmsConfig.getStringList("farms." + farmKey + ".blocks");
+                        // Regenerate the farm
+                        for (String blockType : blocks) {
+                            replantBlockType(world, clipboard, blockType);
+                        }
+                        farmsConfig.set("farms." + farmKey + ".currentCooldown", cooldown); // Reset cooldown
+                        
+                        // Clear cache since farm is now regenerated
+                        lastHarvestPercentage.remove(farmKey);
+                        lastPercentageCheck.remove(farmKey);
+                        
+                        getLogger().info("Regenerated farm: " + farmKey + " (" + String.format("%.1f", averageHarvestedPercentage) + "% harvested)");
+                    }
+                }
+            } else {
+                // Decrease cooldown only when threshold is met
+                currentCooldown -= COOLDOWN_DECREMENT;
+                farmsConfig.set("farms." + farmKey + ".currentCooldown", currentCooldown);
+            }
+        }
+        // If threshold not met, cooldown stays the same (doesn't decrease)
+    }
+    
+    /**
+     * Gets harvest percentage from cache or calculates it if cache is expired
+     * @param farmKey Farm identifier
+     * @param world The world
+     * @param schematicName Schematic name
+     * @param regenPercentage The regeneration percentage threshold
+     * @return The harvest percentage
+     */
+    private double getCachedHarvestPercentage(String farmKey, World world, String schematicName, double regenPercentage) {
+        long now = System.currentTimeMillis();
+        Long lastCheck = lastPercentageCheck.get(farmKey);
+        Double cached = lastHarvestPercentage.get(farmKey);
+        
+        // Smart cache strategy based on how close we are to threshold
+        if (lastCheck != null && cached != null && (now - lastCheck) < PERCENTAGE_CACHE_TIME) {
+            double thresholdBuffer = 10.0; // 10% buffer zone
+            
+            if (cached < (regenPercentage - thresholdBuffer)) {
+                // Well below threshold, safe to use cache for longer
+                return cached;
+            } else if (cached < regenPercentage) {
+                // Close to threshold but not reached, use shorter cache time
+                long shortCacheTime = PERCENTAGE_CACHE_TIME / 3; // 10 seconds instead of 30
+                if ((now - lastCheck) < shortCacheTime) {
+                    return cached;
+                }
+            }
+            // Above threshold or close to it - always calculate fresh for accuracy
+        }
+        
+        // Calculate fresh percentage
+        Clipboard clipboard = loadSchematic(schematicName);
+        if (clipboard == null) {
+            return 0;
+        }
+        
+        List<String> blocks = farmsConfig.getStringList("farms." + farmKey + ".blocks");
+        if (blocks.isEmpty()) {
+            return 0;
+        }
+        
+        double totalHarvestedPercentage = 0;
+        for (String blockType : blocks) {
+            totalHarvestedPercentage += calculateHarvestedPercentage(world, clipboard, blockType.toLowerCase());
+        }
+        double averageHarvestedPercentage = totalHarvestedPercentage / blocks.size();
+        
+        // Cache the result
+        lastHarvestPercentage.put(farmKey, averageHarvestedPercentage);
+        lastPercentageCheck.put(farmKey, now);
+        
+        return averageHarvestedPercentage;
     }
 
 
@@ -258,17 +443,48 @@ public final class TaspiaMines extends JavaPlugin {
         return wgPlugin;
     }
 
+    // Cache for region lookup warnings to prevent spam
+    private final Set<String> loggedRegionWarnings = ConcurrentHashMap.newKeySet();
+    
+    /**
+     * Intelligently invalidates the harvest percentage cache for a specific farm
+     * Uses rate limiting to prevent excessive invalidations during rapid block breaking
+     * @param farmKey The farm identifier
+     */
+    public void invalidateHarvestCache(String farmKey) {
+        long now = System.currentTimeMillis();
+        Long lastInvalidation = lastCacheInvalidation.get(farmKey);
+        
+        // Only invalidate if enough time has passed since last invalidation
+        if (lastInvalidation == null || (now - lastInvalidation) >= CACHE_INVALIDATION_COOLDOWN) {
+            lastHarvestPercentage.remove(farmKey);
+            lastPercentageCheck.remove(farmKey);
+            lastCacheInvalidation.put(farmKey, now);
+        }
+        // If recently invalidated, skip - cache is already fresh enough
+    }
+    
     public ProtectedRegion getRegion(World world, String regionName) {
         RegionContainer container = WorldGuard.getInstance().getPlatform().getRegionContainer();
         RegionManager regionManager = container.get(BukkitAdapter.adapt(world));
         if (regionManager != null) {
             ProtectedRegion region = regionManager.getRegion(regionName);
             if (region == null) {
-                getLogger().warning("Region not found: " + regionName);
+                // Only log this warning once per region to prevent spam
+                String warningKey = world.getName() + ":" + regionName;
+                if (!loggedRegionWarnings.contains(warningKey)) {
+                    getLogger().warning("Region not found: " + regionName + " in world: " + world.getName());
+                    loggedRegionWarnings.add(warningKey);
+                }
             }
             return region;
         } else {
-            getLogger().warning("Region manager not found for world: " + world.getName());
+            // Only log this warning once per world
+            String warningKey = "manager:" + world.getName();
+            if (!loggedRegionWarnings.contains(warningKey)) {
+                getLogger().warning("Region manager not found for world: " + world.getName());
+                loggedRegionWarnings.add(warningKey);
+            }
             return null;
         }
     }
